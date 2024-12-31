@@ -10,3 +10,4 @@ coverage/
 .DS_Store
 src/data/
 firstprinciples.md
+test-vite-project/
