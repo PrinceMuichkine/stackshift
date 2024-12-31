@@ -1,126 +1,124 @@
 import asyncio
-from pathlib import Path
-from typing import Optional
-
 import typer
+from pathlib import Path
 from rich.console import Console
-from rich.progress import Progress
+from rich.table import Table
+from rich.panel import Panel
 
-from analyzers import ProjectAnalyzer
-from __init__ import __version__
+from analyzers.ai_analyzer import AIAnalyzer
+from models import AIAnalysis
 
-app = typer.Typer(
-    name="stackshift",
-    help="CLI tool to migrate web applications from Vite to Next.js",
-    add_completion=False,
-)
+app = typer.Typer()
 console = Console()
 
-def version_callback(value: bool):
-    if value:
-        console.print(f"StackShift CLI Version: {__version__}")
-        raise typer.Exit()
-
-@app.callback()
-def main(
-    version: Optional[bool] = typer.Option(
-        None,
-        "--version",
-        "-v",
-        help="Show the application version and exit.",
-        callback=version_callback,
-        is_eager=True,
+def display_analysis_results(analysis: AIAnalysis):
+    """Display the analysis results in a formatted table."""
+    # Display routing analysis
+    routing_table = Table(title="Routing Analysis")
+    routing_table.add_column("Current Path")
+    routing_table.add_column("Next.js Path")
+    routing_table.add_column("Component")
+    
+    for route in analysis.routing.current_structure:
+        routing_table.add_row(
+            route.path,
+            route.nextjs_path,
+            route.component_path
+        )
+    
+    console.print(routing_table)
+    
+    # Display dependency analysis
+    dep_table = Table(title="Dependency Analysis")
+    dep_table.add_column("Package")
+    dep_table.add_column("Action")
+    dep_table.add_column("Notes")
+    
+    for dep in analysis.dependencies.dependencies:
+        dep_table.add_row(
+            f"{dep.name}@{dep.version}",
+            "Remove" if dep.nextjs_equivalent is None else f"Replace with {dep.nextjs_equivalent}",
+            dep.migration_notes or ""
+        )
+    
+    console.print(dep_table)
+    
+    # Display configuration analysis
+    config_panel = Panel(
+        "\n".join([
+            "Configuration Changes:",
+            "-------------------",
+            *analysis.configuration.migration_notes
+        ]),
+        title="Configuration Analysis"
     )
-):
-    """
-    StackShift CLI - Migrate your Vite apps to Next.js with ease
-    """
-    pass
+    console.print(config_panel)
+    
+    # Display overall recommendations
+    rec_panel = Panel(
+        "\n".join([
+            f"Migration Complexity: {analysis.migration_complexity}",
+            f"Estimated Time: {analysis.estimated_time}",
+            "",
+            "Recommendations:",
+            "---------------",
+            *analysis.general_recommendations
+        ]),
+        title="Overall Recommendations"
+    )
+    console.print(rec_panel)
 
 @app.command()
-def analyze(
+def scan(
     project_path: Path = typer.Argument(
         ...,
         help="Path to the Vite project to analyze",
         exists=True,
         file_okay=False,
         dir_okay=True,
-        resolve_path=True,
-    ),
-    skip_ai: bool = typer.Option(
-        False,
-        "--skip-ai",
-        "-s",
-        help="Skip AI-assisted analysis",
+        resolve_path=True
     ),
     non_interactive: bool = typer.Option(
         False,
         "--non-interactive",
         "-n",
-        help="Run in non-interactive mode",
-    ),
+        help="Run in non-interactive mode"
+    )
 ):
-    """
-    Analyze a Vite project for migration to Next.js
-    """
-    async def run_analysis():
-        try:
-            analyzer = ProjectAnalyzer(str(project_path))
-            with Progress() as progress:
-                task = progress.add_task("Analyzing project...", total=100)
-                
-                # Update progress as analysis proceeds
-                progress.update(task, advance=30)
-                analysis = await analyzer.analyze_project(skip_ai, non_interactive)
-                progress.update(task, advance=70)
-                
-                # Print analysis results
-                console.print("\n[bold green]Analysis Complete![/bold green]")
-                console.print(f"\nProject: {analysis.project_name}")
-                console.print(f"Framework Version: {analysis.framework_version}")
-                
-                if analysis.ai_analysis:
-                    console.print("\n[bold]AI Analysis Results:[/bold]")
-                    console.print(f"Migration Complexity: {analysis.ai_analysis.migration_complexity}")
-                    console.print(f"Estimated Time: {analysis.ai_analysis.estimated_time}")
-                    
-                    if analysis.ai_analysis.general_recommendations:
-                        console.print("\n[bold]Recommendations:[/bold]")
-                        for rec in analysis.ai_analysis.general_recommendations:
-                            console.print(f"• {rec}")
-                
-                if analysis.warnings:
-                    console.print("\n[yellow]Warnings:[/yellow]")
-                    for warning in analysis.warnings:
-                        console.print(f"• {warning}")
-                
-                if analysis.errors:
-                    console.print("\n[red]Errors:[/red]")
-                    for error in analysis.errors:
-                        console.print(f"• {error}")
-                
-        except Exception as e:
-            console.print(f"\n[red]Error:[/red] {str(e)}")
-            raise typer.Exit(1)
-    
-    asyncio.run(run_analysis())
-
-@app.command()
-def migrate(
-    project_path: Path = typer.Argument(
-        ...,
-        help="Path to the Vite project to migrate",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True,
-    ),
-):
-    """
-    Migrate a Vite project to Next.js (Not implemented yet)
-    """
-    console.print("[yellow]Migration command not implemented yet[/yellow]")
-    raise typer.Exit(1)
+    """Scan a Vite project and generate a migration report."""
+    try:
+        # Initialize analyzer
+        analyzer = AIAnalyzer(str(project_path))
+        
+        # Display project structure
+        with console.status("Analyzing project structure..."):
+            structure = analyzer.analyze_project_structure()
+            
+            structure_table = Table(title="Project Structure")
+            structure_table.add_column("Path")
+            structure_table.add_column("Type")
+            structure_table.add_column("Size")
+            
+            for path, info in structure.items():
+                if isinstance(info, dict):
+                    structure_table.add_row(
+                        path,
+                        info.get("type", "unknown"),
+                        f"{info.get('size', 0) / 1024:.1f} KB"
+                    )
+            
+            console.print(structure_table)
+        
+        # Run AI analysis
+        with console.status("Running AI analysis..."):
+            analysis = asyncio.run(analyzer.analyze_codebase(non_interactive=non_interactive))
+        
+        # Display results
+        display_analysis_results(analysis)
+        
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+        raise typer.Exit(code=1)
 
 if __name__ == "__main__":
     app() 

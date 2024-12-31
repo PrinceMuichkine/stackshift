@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, Optional, Any
 
 from analyzers.ai_analyzer import AIAnalyzer
-from types import ProjectAnalysis, AIAnalysis
+from models import ProjectAnalysis, AIAnalysis
 
 class ProjectAnalyzer:
     def __init__(self, project_path: str) -> None:
