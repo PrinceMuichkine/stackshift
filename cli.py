@@ -1,164 +1,287 @@
+"""
+Command-line interface for stackshift
+"""
+
 import os
 import sys
+from typing import List, Optional
 import click
 from pathlib import Path
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
-from prompt_toolkit.shortcuts import radiolist_dialog
-from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.history import FileHistory
 from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
 
-from config import console, get_api_key, setup_config, is_vite_project
-from analyzers.project_analyzer import ProjectAnalyzer
-from analyzers.ai_analyzer import AIAnalyzer
-from display import (
-    display_project_structure,
-    display_migration_status,
-    display_package_changes,
-    display_migration_steps,
-    display_available_commands,
-    display_validation_results,
-    display_error
-)
+from analyzers.validation import NextJsVersion, MigrationValidator, ValidationResult
+from analyzers.fixer import MigrationFixer
+from config import get_api_key, setup_config, is_vite_project
+from display import display_scan_results, display_validation_results, display_transformation_results
 
-def get_project_path(path: str = None) -> str:
-    """Get absolute project path, checking if inside or outside project"""
-    if not path:
-        # Check if current directory is a Vite project
-        current = Path.cwd()
-        if is_vite_project(current):
-            return str(current)
-        return None
+console = Console()
+
+def get_project_path() -> Path:
+    """Get the project path based on current directory"""
+    cwd = Path.cwd()
     
-    project_path = Path(path).resolve()
-    if not project_path.exists():
-        raise click.BadParameter(f"Project path {path} does not exist")
-    if not is_vite_project(project_path):
-        raise click.BadParameter(f"Directory {path} is not a Vite project")
-    return str(project_path)
-
+    # Check if we're inside a Vite project
+    if is_vite_project(cwd):
+        return cwd
+        
+    # Look for Vite project in subdirectories
+    for path in cwd.iterdir():
+        if path.is_dir() and is_vite_project(path):
+            return path
+            
+    # No Vite project found
+    console.print("[red]Error: No Vite project found in current directory[/red]")
+    sys.exit(1)
+    
+def create_completer(commands: List[str]) -> WordCompleter:
+    """Create command completer"""
+    return WordCompleter(commands, ignore_case=True)
+    
 @click.group()
 def app():
-    """stackshift - Vite to Next.js migration tool"""
+    """stackshift - Migrate Vite projects to Next.js"""
     pass
-
+    
 @app.command()
-def setup():
-    """Configure stackshift with your Anthropic API key"""
-    api_key = click.prompt("Enter your Anthropic API key", type=str)
-    setup_config(api_key)
-
-@app.command()
-@click.argument('project', required=False)
-@click.option('--execute', is_flag=True, help='Execute migration steps')
-def scan(project, execute):
-    """Scan and analyze a Vite project for Next.js migration"""
+@click.argument("project_path", required=False)
+@click.option("--router", type=click.Choice(["app", "pages"]), default="app", help="Next.js router type")
+def scan(project_path: Optional[str], router: str):
+    """Scan a Vite project for migration"""
     try:
-        project_path = get_project_path(project)
-        if not project_path:
-            display_error("No Vite project found. Please specify a project path.")
-            return
-            
-        api_key = get_api_key(console)
-        analyzer = AIAnalyzer(project_path, api_key)
+        # Get project path
+        path = Path(project_path) if project_path else get_project_path()
         
-        # Display project structure
-        structure = analyzer.analyze_project_structure()
-        display_project_structure(structure)
-        
-        # Run analysis
-        analysis = analyzer.analyze_codebase()
+        # Validate project
+        validator = MigrationValidator(str(path))
+        result = validator.validate(NextJsVersion.APP if router == "app" else NextJsVersion.PAGES)
         
         # Display results
-        display_migration_status(analysis)
-        display_package_changes(analysis)
-        display_migration_steps(analysis.actions)
-        display_available_commands(project_path)
-        
-        if execute:
-            analyzer.execute_all_actions()
+        if result.errors:
+            console.print("\n[red]Migration Issues:[/red]")
+            for error in result.errors:
+                console.print(f"[red]• {error}[/red]")
+                
+        if result.warnings:
+            console.print("\n[yellow]Warnings:[/yellow]")
+            for warning in result.warnings:
+                console.print(f"[yellow]• {warning}[/yellow]")
+                
+        if result.passed_checks:
+            console.print("\n[green]Passed Checks:[/green]")
+            for check in result.passed_checks:
+                console.print(f"[green]• {check}[/green]")
+                
+        # Show overall status
+        if result.success:
+            console.print("\n[green]✓ Project is ready for migration[/green]")
+        else:
+            console.print("\n[red]✗ Project requires fixes before migration[/red]")
             
     except Exception as e:
-        display_error(str(e))
-
+        console.print(f"[red]Error: {str(e)}[/red]")
+        sys.exit(1)
+        
 @app.command()
-@click.argument('project', required=False)
-@click.option('--all', is_flag=True, help='Run all transformations')
-@click.option('--client', is_flag=True, help='Add "use client" to components')
-@click.option('--router', is_flag=True, help='Migrate from React Router to Next.js')
-@click.option('--styles', is_flag=True, help='Migrate CSS/styles to Next.js')
-@click.option('--api', is_flag=True, help='Migrate API routes to Next.js')
-@click.option('--images', is_flag=True, help='Migrate images to Next.js Image component')
-def transform(project, all, client, router, styles, api, images):
-    """Transform specific aspects of the codebase"""
+@click.argument("project_path", required=False)
+@click.option("--router", type=click.Choice(["app", "pages"]), default="app", help="Next.js router type")
+@click.option("--fix", is_flag=True, help="Automatically fix issues")
+def validate(project_path: Optional[str], router: str, fix: bool):
+    """Validate Next.js migration"""
     try:
-        project_path = get_project_path(project)
-        if not project_path:
-            display_error("No Vite project found. Please specify a project path.")
-            return
-            
+        # Get project path
+        path = Path(project_path) if project_path else get_project_path()
+        
+        # Get API key
         api_key = get_api_key(console)
-        analyzer = AIAnalyzer(project_path, api_key)
         
-        # If --all is specified, run all transformations
-        if all:
-            client = router = styles = api = images = True
+        # Validate project
+        validator = MigrationValidator(str(path))
+        result = validator.validate(NextJsVersion.APP if router == "app" else NextJsVersion.PAGES)
         
-        transformed_files = []
-        
-        if client:
-            files = analyzer.transform_to_client_components()
-            transformed_files.extend(files)
-            console.print(f"✓ Added 'use client' to {len(files)} components")
-            
-        if router:
-            files = analyzer.migrate_router_to_nextjs()
-            transformed_files.extend(files)
-            console.print(f"✓ Migrated {len(files)} files from React Router to Next.js")
-            
-        if styles:
-            files = analyzer.migrate_styles_to_nextjs()
-            transformed_files.extend(files)
-            console.print(f"✓ Migrated {len(files)} style files to Next.js")
-            
-        if api:
-            files = analyzer.migrate_api_to_nextjs()
-            transformed_files.extend(files)
-            console.print(f"✓ Migrated {len(files)} API routes to Next.js")
-            
-        if images:
-            files = analyzer.migrate_images_to_nextjs()
-            transformed_files.extend(files)
-            console.print(f"✓ Migrated {len(files)} images to Next.js Image component")
-            
-        if transformed_files:
-            console.print(f"\nTotal files transformed: {len(set(transformed_files))}")
+        # Display results
+        if result.errors:
+            console.print("\n[red]Validation Errors:[/red]")
+            for error in result.errors:
+                console.print(f"[red]• {error}[/red]")
+                
+            if fix:
+                # Create missing files
+                fixer = MigrationFixer(str(path), api_key)
+                created_files = fixer.create_missing_files(result)
+                
+                if created_files:
+                    console.print("\n[green]Created files:[/green]")
+                    for file in created_files:
+                        console.print(f"[green]• {file}[/green]")
+                        
+                # Fix issues in existing files
+                fixed_files = fixer.fix_issues(result)
+                
+                if fixed_files:
+                    console.print("\n[green]Fixed files:[/green]")
+                    for file in fixed_files:
+                        console.print(f"[green]• {file}[/green]")
+                        
+                if not created_files and not fixed_files:
+                    console.print("\n[yellow]No files were fixed[/yellow]")
+                    
+        if result.warnings:
+            console.print("\n[yellow]Warnings:[/yellow]")
+            for warning in result.warnings:
+                console.print(f"[yellow]• {warning}[/yellow]")
+                
+        if result.passed_checks:
+            console.print("\n[green]Passed Checks:[/green]")
+            for check in result.passed_checks:
+                console.print(f"[green]• {check}[/green]")
+                
+        # Show overall status
+        if result.success:
+            console.print("\n[green]✓ Validation passed[/green]")
+        else:
+            console.print("\n[red]✗ Validation failed[/red]")
             
     except Exception as e:
-        display_error(str(e))
-
+        console.print(f"[red]Error: {str(e)}[/red]")
+        sys.exit(1)
+        
 @app.command()
-@click.argument('project', required=False)
-def validate(project):
-    """Validate migration progress"""
+@click.argument("project_path", required=False)
+async def transform(project_path: Optional[str]):
+    """Transform all components"""
     try:
-        project_path = get_project_path(project)
-        if not project_path:
-            display_error("No Vite project found. Please specify a project path.")
-            return
-            
-        api_key = get_api_key(console)
-        analyzer = AIAnalyzer(project_path, api_key)
-        results = analyzer.validate_migration()
+        # Get project path
+        path = Path(project_path) if project_path else get_project_path()
         
-        display_validation_results(
-            results.success,
-            results.passed_checks,
-            results.errors
-        )
+        # Get API key
+        api_key = get_api_key(console)
+        
+        # Create fixer
+        fixer = MigrationFixer(str(path), api_key)
+        
+        # Transform components
+        with console.status("[bold green]Transforming components..."):
+            fixed_files = await fixer.fix_issues(ValidationResult(NextJsVersion.APP))
+            
+        if fixed_files:
+            console.print("\n[green]Transformed files:[/green]")
+            for file in fixed_files:
+                console.print(f"[green]• {file}[/green]")
+        else:
+            console.print("\n[yellow]No files were transformed[/yellow]")
+            
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+        sys.exit(1)
+        
+@app.command()
+def setup():
+    """Configure stackshift"""
+    try:
+        # Get API key
+        api_key = click.prompt("Enter your Anthropic API key", type=str)
+        
+        # Save configuration
+        setup_config(api_key)
+        
+        console.print("[green]Configuration saved successfully[/green]")
         
     except Exception as e:
-        display_error(str(e))
-
-if __name__ == '__main__':
+        console.print(f"[red]Error: {str(e)}[/red]")
+        sys.exit(1)
+        
+@app.command()
+@click.argument("project_path", required=False)
+def chat(project_path: Optional[str]):
+    """Interactive chat for migration assistance"""
+    try:
+        # Get project path
+        path = Path(project_path) if project_path else get_project_path()
+        
+        # Get API key
+        api_key = get_api_key(console)
+        
+        # Create session
+        history = FileHistory(os.path.expanduser("~/.stackshift_history"))
+        session = PromptSession(history=history)
+        
+        # Create completer
+        commands = ["help", "scan", "validate", "transform", "exit"]
+        completer = create_completer(commands)
+        
+        console.print("[bold]Migration Assistant[/bold]")
+        console.print("Type 'help' for available commands or 'exit' to quit")
+        
+        while True:
+            try:
+                # Get user input
+                text = session.prompt(
+                    "\nstackshift> ",
+                    completer=completer
+                )
+                
+                if text.lower() == "exit":
+                    break
+                elif text.lower() == "help":
+                    show_help()
+                else:
+                    # Process command
+                    process_command(text, path, api_key)
+                    
+            except KeyboardInterrupt:
+                continue
+            except EOFError:
+                break
+                
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+        sys.exit(1)
+        
+def show_help():
+    """Show help information"""
+    table = Table(title="Available Commands")
+    
+    table.add_column("Command", style="cyan")
+    table.add_column("Description", style="green")
+    
+    table.add_row("scan", "Scan project for migration")
+    table.add_row("validate", "Validate migration progress")
+    table.add_row("transform", "Transform all components")
+    table.add_row("help", "Show this help message")
+    table.add_row("exit", "Exit the assistant")
+    
+    console.print(table)
+    
+async def process_command(command: str, project_path: Path, api_key: str):
+    """Process chat command"""
+    parts = command.split()
+    cmd = parts[0].lower()
+    
+    if cmd == "scan":
+        # Run scan
+        validator = MigrationValidator(str(project_path))
+        result = validator.validate(NextJsVersion.APP)
+        display_scan_results(result)
+        
+    elif cmd == "validate":
+        # Run validation
+        validator = MigrationValidator(str(project_path))
+        result = validator.validate(NextJsVersion.APP)
+        display_validation_results(result)
+        
+    elif cmd == "transform":
+        # Transform components
+        fixer = MigrationFixer(str(project_path), api_key)
+        fixed_files = await fixer.fix_issues(ValidationResult(NextJsVersion.APP))
+        display_transformation_results(fixed_files)
+        
+    else:
+        console.print(f"[red]Unknown command: {cmd}[/red]")
+        
+if __name__ == "__main__":
     app() 

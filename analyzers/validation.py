@@ -1,302 +1,290 @@
 """
-Validation module for checking Next.js migration status
+Validation module for Next.js migration
 """
 
-from pathlib import Path
-from typing import List, Dict, Any, NamedTuple, Optional
-import json
-import re
 from enum import Enum
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+import re
+import ast
+import json
 
 class NextJsVersion(Enum):
-    PAGES = "pages"
+    """Next.js router version"""
     APP = "app"
+    PAGES = "pages"
 
-class ValidationResult(NamedTuple):
-    success: bool
-    passed_checks: List[str]
-    errors: List[str]
-    warnings: List[str]  # Added warnings for suggestions
-    router_type: NextJsVersion
-
-class RouteMapping(NamedTuple):
-    vite_route: str
-    nextjs_route: str
-    params: List[str]
-    is_dynamic: bool
-
+class ValidationResult:
+    """Result of migration validation"""
+    def __init__(self, router_type: NextJsVersion):
+        self.router_type = router_type
+        self.errors: List[str] = []
+        self.warnings: List[str] = []
+        self.passed_checks: List[str] = []
+        self.success: bool = True
+        
 class MigrationValidator:
+    """Validator for Next.js migration"""
     def __init__(self, project_path: str):
         self.project_path = Path(project_path)
-        self.router_type = self._detect_router_type()
         
-    def _detect_router_type(self) -> NextJsVersion:
-        """Detect if using Pages Router or App Router"""
-        if (self.project_path / "app").exists():
-            return NextJsVersion.APP
-        return NextJsVersion.PAGES
+    def validate(self, router_type: NextJsVersion) -> ValidationResult:
+        """Validate the migration"""
+        result = ValidationResult(router_type)
         
-    def validate_migration(self) -> ValidationResult:
-        """Run all validation checks"""
-        passed_checks = []
-        errors = []
-        warnings = []
+        # Check project structure
+        self._validate_project_structure(result)
         
-        # Check 1: Next.js dependencies
-        if self._check_nextjs_dependencies():
-            passed_checks.append("✓ Next.js dependencies are properly configured")
-        else:
-            errors.append("✗ Missing or incorrect Next.js dependencies")
-            
-        # Check 2: Project structure based on router type
-        structure_errors, structure_warnings = self._check_project_structure()
-        if not structure_errors:
-            passed_checks.append(f"✓ Project structure follows Next.js {self.router_type.value} router conventions")
-        else:
-            errors.extend(structure_errors)
-        warnings.extend(structure_warnings)
-            
-        # Check 3: Component migrations
-        component_errors = self._check_components()
-        if not component_errors:
-            passed_checks.append("✓ Components are properly migrated")
-        else:
-            errors.extend(component_errors)
-            
-        # Check 4: Routing based on router type
-        routing_errors, routing_warnings = self._check_routing()
-        if not routing_errors:
-            passed_checks.append("✓ Routing is properly migrated to Next.js")
-        else:
-            errors.extend(routing_errors)
-        warnings.extend(routing_warnings)
-            
-        # Check 5: Image components
-        image_errors = self._check_images()
-        if not image_errors:
-            passed_checks.append("✓ Images are properly migrated to Next.js Image")
-        else:
-            errors.extend(image_errors)
-            
-        # Check 6: API routes
-        api_errors, api_warnings = self._check_api_routes()
-        if not api_errors:
-            passed_checks.append("✓ API routes are properly migrated")
-        else:
-            errors.extend(api_errors)
-        warnings.extend(api_warnings)
-            
-        return ValidationResult(
-            success=len(errors) == 0,
-            passed_checks=passed_checks,
-            errors=errors,
-            warnings=warnings,
-            router_type=self.router_type
-        )
+        # Check routing
+        self._validate_routing(result)
         
-    def _check_nextjs_dependencies(self) -> bool:
-        """Check if Next.js dependencies are properly configured"""
-        try:
-            with open(self.project_path / "package.json") as f:
-                package = json.load(f)
-                deps = {**package.get("dependencies", {}), **package.get("devDependencies", {})}
-                
-                required_deps = {
-                    "next": True,
-                    "react": True,
-                    "react-dom": True
-                }
-                
-                return all(dep in deps for dep in required_deps)
-        except Exception:
-            return False
-            
-    def _check_project_structure(self) -> tuple[List[str], List[str]]:
-        """Check if project structure follows Next.js conventions"""
-        errors = []
-        warnings = []
+        # Check components
+        self._validate_components(result)
         
-        if self.router_type == NextJsVersion.APP:
-            # App Router structure
-            required_dirs = ["app", "public", "components"]
-            required_files = {
-                "app/layout.tsx": "Root layout",
-                "app/page.tsx": "Root page",
-                "middleware.ts": "Optional middleware"
-            }
-            
-            # Check for proper route grouping
-            route_groups = list(self.project_path.glob("app/**/(_auth|_dashboard|_admin)"))
-            if not route_groups:
-                warnings.append("! Consider using route groups (_auth, _dashboard) for better organization")
-                
-            # Check for proper loading/error handling
-            for route_dir in self.project_path.glob("app/**/"):
-                if not any(file.name in ["loading.tsx", "error.tsx"] for file in route_dir.iterdir()):
-                    warnings.append(f"! Missing loading.tsx or error.tsx in {route_dir.relative_to(self.project_path)}")
-                    
-        else:
-            # Pages Router structure
-            required_dirs = ["pages", "public", "components"]
-            required_files = {
-                "pages/_app.tsx": "Custom App",
-                "pages/_document.tsx": "Custom Document",
-                "pages/index.tsx": "Home page"
-            }
-            
-            # Check for proper dynamic routes
-            dynamic_routes = list(self.project_path.glob("pages/**/[*.tsx"))
-            if not dynamic_routes:
-                warnings.append("! No dynamic routes found, make sure they're properly migrated")
-                
+        # Check dependencies
+        self._validate_dependencies(result)
+        
+        # Check configuration
+        self._validate_configuration(result)
+        
+        # Update success status
+        result.success = len(result.errors) == 0
+        
+        return result
+        
+    def _validate_project_structure(self, result: ValidationResult) -> None:
+        """Validate project structure"""
         # Check required directories
+        required_dirs = ["app"] if result.router_type == NextJsVersion.APP else ["pages"]
         for dir_name in required_dirs:
-            if not (self.project_path / dir_name).exists():
-                errors.append(f"✗ Missing required directory: {dir_name}/")
+            dir_path = self.project_path / dir_name
+            if not dir_path.exists():
+                result.errors.append(f"Missing required directory: {dir_name}")
                 
         # Check required files
-        for file_path, description in required_files.items():
-            if not (self.project_path / file_path).exists():
-                errors.append(f"✗ Missing {description}: {file_path}")
+        required_files = self._get_required_files(result.router_type)
+        for file_info in required_files:
+            file_path = self.project_path / file_info["path"]
+            if not file_path.exists():
+                result.errors.append(f"Missing required file: {file_info['path']}")
                 
-        return errors, warnings
+        # Check for Vite remnants
+        vite_files = ["vite.config.ts", "vite.config.js"]
+        for file_name in vite_files:
+            if (self.project_path / file_name).exists():
+                result.warnings.append(f"Found Vite configuration file: {file_name}")
+                
+    def _validate_routing(self, result: ValidationResult) -> None:
+        """Validate routing implementation"""
+        router_dir = self.project_path / ("app" if result.router_type == NextJsVersion.APP else "pages")
+        if not router_dir.exists():
+            return
+            
+        # Check route files
+        for route_file in router_dir.rglob("*.tsx"):
+            relative_path = route_file.relative_to(self.project_path)
+            
+            # Read file content
+            try:
+                content = route_file.read_text()
+            except Exception:
+                result.errors.append(f"Could not read route file: {relative_path}")
+                continue
+                
+            # Validate route implementation
+            if result.router_type == NextJsVersion.APP:
+                self._validate_app_route(relative_path, content, result)
+            else:
+                self._validate_pages_route(relative_path, content, result)
+                
+    def _validate_app_route(self, path: Path, content: str, result: ValidationResult) -> None:
+        """Validate App Router route"""
+        # Check for proper exports
+        if not re.search(r"export\s+default\s+function", content):
+            result.errors.append(f"Missing default export in route: {path}")
+            
+        # Check for proper metadata
+        if "page.tsx" in str(path) and not re.search(r"export\s+const\s+metadata", content):
+            result.warnings.append(f"Missing metadata in page: {path}")
+            
+        # Check for proper error handling
+        if "error.tsx" in str(path) and not "'use client'" in content:
+            result.errors.append(f"Error boundary must be client component: {path}")
+            
+        # Check for proper loading states
+        if "loading.tsx" in str(path) and not re.search(r"export\s+default\s+function\s+Loading", content):
+            result.errors.append(f"Invalid loading component: {path}")
+            
+    def _validate_pages_route(self, path: Path, content: str, result: ValidationResult) -> None:
+        """Validate Pages Router route"""
+        # Check for proper exports
+        if not re.search(r"export\s+default", content):
+            result.errors.append(f"Missing default export in route: {path}")
+            
+        # Check for getServerSideProps/getStaticProps
+        if re.search(r"getInitialProps", content):
+            result.warnings.append(f"Found legacy getInitialProps in: {path}")
+            
+        # Check for proper error handling
+        if "_error.tsx" in str(path) and not re.search(r"Error\s*extends\s*React\.Component", content):
+            result.errors.append(f"Invalid error page implementation: {path}")
+            
+    def _validate_components(self, result: ValidationResult) -> None:
+        """Validate component implementations"""
+        component_dirs = ["components", "src/components"]
+        for dir_name in component_dirs:
+            component_dir = self.project_path / dir_name
+            if not component_dir.exists():
+                continue
+                
+            # Check each component
+            for component_file in component_dir.rglob("*.tsx"):
+                relative_path = component_file.relative_to(self.project_path)
+                
+                try:
+                    content = component_file.read_text()
+                except Exception:
+                    result.errors.append(f"Could not read component: {relative_path}")
+                    continue
+                    
+                # Validate component implementation
+                self._validate_component(relative_path, content, result)
+                
+    def _validate_component(self, path: Path, content: str, result: ValidationResult) -> None:
+        """Validate a single component"""
+        # Check for client-side features
+        uses_client_features = any(feature in content for feature in [
+            "useState",
+            "useEffect",
+            "useRouter",
+            "onClick",
+            "onChange"
+        ])
         
-    def _analyze_vite_routes(self) -> List[RouteMapping]:
-        """Analyze Vite routes and map them to Next.js routes"""
-        route_mappings = []
+        # Check for 'use client' directive
+        has_use_client = "'use client'" in content or '"use client"' in content
         
-        # Common Vite route patterns
-        vite_patterns = [
-            # Basic routes
-            (r'path: "/(.*?)"', r'\1'),
-            # Dynamic routes
-            (r'path: "/:(.*?)"', r'[\1]'),
-            # Optional parameters
-            (r'path: "/(.*?)\?"', r'[[...slug]]'),
-            # Catch-all routes
-            (r'path: "/\*(.*?)"', r'[...slug]'),
-            # Nested routes
-            (r'path: "/(.*?)/(.*?)"', r'\1/\2')
+        if uses_client_features and not has_use_client:
+            result.errors.append(f"Missing 'use client' directive in client component: {path}")
+            
+        # Check for proper exports
+        if not re.search(r"export\s+(?:default|const|function)", content):
+            result.errors.append(f"Missing component export: {path}")
+            
+        # Check for proper types
+        if not re.search(r":\s*(?:React\.)?(?:FC|FunctionComponent|ComponentType)", content):
+            result.warnings.append(f"Missing type definition in component: {path}")
+            
+    def _validate_dependencies(self, result: ValidationResult) -> None:
+        """Validate project dependencies"""
+        package_json = self.project_path / "package.json"
+        if not package_json.exists():
+            result.errors.append("Missing package.json")
+            return
+            
+        try:
+            with open(package_json) as f:
+                package_data = json.load(f)
+        except Exception:
+            result.errors.append("Invalid package.json")
+            return
+            
+        # Check required dependencies
+        required_deps = {
+            "next": "^14.0.0",
+            "react": "^18.0.0",
+            "react-dom": "^18.0.0"
+        }
+        
+        deps = {**package_data.get("dependencies", {}), **package_data.get("devDependencies", {})}
+        
+        for dep, version in required_deps.items():
+            if dep not in deps:
+                result.errors.append(f"Missing required dependency: {dep}")
+                
+        # Check for conflicting dependencies
+        conflicts = ["react-router", "react-router-dom", "@vitejs/plugin-react"]
+        for conflict in conflicts:
+            if conflict in deps:
+                result.errors.append(f"Found conflicting dependency: {conflict}")
+                
+    def _validate_configuration(self, result: ValidationResult) -> None:
+        """Validate project configuration"""
+        # Check Next.js config
+        next_config = self.project_path / "next.config.js"
+        if not next_config.exists():
+            result.errors.append("Missing next.config.js")
+        else:
+            try:
+                content = next_config.read_text()
+                if not re.search(r"module\.exports\s*=", content):
+                    result.errors.append("Invalid next.config.js format")
+            except Exception:
+                result.errors.append("Could not read next.config.js")
+                
+        # Check TypeScript config
+        tsconfig = self.project_path / "tsconfig.json"
+        if not tsconfig.exists():
+            result.errors.append("Missing tsconfig.json")
+        else:
+            try:
+                with open(tsconfig) as f:
+                    ts_config = json.load(f)
+                    
+                # Check compiler options
+                compiler_options = ts_config.get("compilerOptions", {})
+                if not compiler_options.get("jsx"):
+                    result.warnings.append("Missing JSX configuration in tsconfig.json")
+                    
+                if not compiler_options.get("baseUrl"):
+                    result.warnings.append("Missing baseUrl in tsconfig.json")
+                    
+            except Exception:
+                result.errors.append("Invalid tsconfig.json")
+                
+    def _get_required_files(self, router_type: NextJsVersion) -> List[Dict[str, str]]:
+        """Get list of required files based on router type"""
+        common_files = [
+            {
+                "path": "next.config.js",
+                "type": "config",
+                "description": "Next.js configuration file"
+            },
+            {
+                "path": "tsconfig.json",
+                "type": "config",
+                "description": "TypeScript configuration file"
+            },
+            {
+                "path": "package.json",
+                "type": "config",
+                "description": "Package configuration file"
+            }
         ]
         
-        # Search for route definitions in all files
-        for ext in [".tsx", ".jsx", ".ts", ".js"]:
-            for file in self.project_path.rglob(f"*{ext}"):
-                with open(file) as f:
-                    content = f.read()
-                    
-                    # Look for router configuration
-                    if "createBrowserRouter" in content or "Routes" in content:
-                        for pattern, nextjs_format in vite_patterns:
-                            matches = re.finditer(pattern, content)
-                            for match in matches:
-                                vite_route = match.group(1)
-                                params = re.findall(r':(\w+)', vite_route)
-                                is_dynamic = bool(params)
-                                
-                                if self.router_type == NextJsVersion.APP:
-                                    nextjs_route = f"app/{vite_route}/page.tsx"
-                                else:
-                                    nextjs_route = f"pages/{vite_route}.tsx"
-                                    
-                                route_mappings.append(RouteMapping(
-                                    vite_route=vite_route,
-                                    nextjs_route=nextjs_route,
-                                    params=params,
-                                    is_dynamic=is_dynamic
-                                ))
-                                
-        return route_mappings
-        
-    def _check_routing(self) -> tuple[List[str], List[str]]:
-        """Check if routing is properly migrated to Next.js"""
-        errors = []
-        warnings = []
-        
-        # Analyze Vite routes
-        route_mappings = self._analyze_vite_routes()
-        
-        # Check if all Vite routes have corresponding Next.js routes
-        for route in route_mappings:
-            target_file = self.project_path / route.nextjs_route
-            if not target_file.exists():
-                errors.append(f"✗ Missing Next.js route for '{route.vite_route}' at {route.nextjs_route}")
-                
-            if target_file.exists():
-                with open(target_file) as f:
-                    content = f.read()
-                    
-                    # Check for proper parameter handling
-                    if route.is_dynamic:
-                        if self.router_type == NextJsVersion.APP:
-                            for param in route.params:
-                                if f"params.{param}" not in content:
-                                    errors.append(f"✗ Missing parameter '{param}' handling in {route.nextjs_route}")
-                        else:
-                            for param in route.params:
-                                if "useRouter" not in content or f"router.query.{param}" not in content:
-                                    errors.append(f"✗ Missing parameter '{param}' handling in {route.nextjs_route}")
-                                    
-                    # Check for proper imports
-                    if self.router_type == NextJsVersion.APP:
-                        if "next/navigation" not in content and ("useRouter" in content or "usePathname" in content):
-                            errors.append(f"✗ Missing next/navigation import in {route.nextjs_route}")
-                    else:
-                        if "next/router" not in content and "useRouter" in content:
-                            errors.append(f"✗ Missing next/router import in {route.nextjs_route}")
-                            
-        # Check for proper navigation methods
-        for ext in [".tsx", ".jsx"]:
-            for file in self.project_path.rglob(f"*{ext}"):
-                with open(file) as f:
-                    content = f.read()
-                    
-                    # Check navigation patterns
-                    if self.router_type == NextJsVersion.APP:
-                        if "router.push" in content and "useRouter" not in content:
-                            errors.append(f"✗ Using router.push without useRouter in {file.relative_to(self.project_path)}")
-                        if "window.location" in content:
-                            warnings.append(f"! Using window.location instead of Next.js navigation in {file.relative_to(self.project_path)}")
-                    else:
-                        if "router.push" in content and "useRouter" not in content:
-                            errors.append(f"✗ Using router.push without useRouter in {file.relative_to(self.project_path)}")
-                            
-        return errors, warnings
-        
-    def _check_api_routes(self) -> tuple[List[str], List[str]]:
-        """Check if API routes are properly migrated"""
-        errors = []
-        warnings = []
-        
-        # Determine API directory based on router type
-        api_dir = self.project_path / ("app/api" if self.router_type == NextJsVersion.APP else "pages/api")
-        
-        if not api_dir.exists():
-            return [], []  # No API routes to check
-            
-        for file in api_dir.rglob("*.ts"):
-            with open(file) as f:
-                content = f.read()
-                
-                if self.router_type == NextJsVersion.APP:
-                    # App Router API conventions
-                    if not any(handler in content for handler in ["GET", "POST", "PUT", "DELETE"]):
-                        errors.append(f"✗ Missing HTTP method handlers in API route: {file.relative_to(self.project_path)}")
-                    if "next/server" not in content:
-                        errors.append(f"✗ Missing next/server import in API route: {file.relative_to(self.project_path)}")
-                    if "export async function" not in content:
-                        errors.append(f"✗ API handlers should be async functions in {file.relative_to(self.project_path)}")
-                else:
-                    # Pages Router API conventions
-                    if "export default" not in content:
-                        errors.append(f"✗ Missing default export in API route: {file.relative_to(self.project_path)}")
-                    if "NextApiRequest" not in content or "NextApiResponse" not in content:
-                        errors.append(f"✗ Missing Next.js API types in {file.relative_to(self.project_path)}")
-                        
-                # Common checks
-                if "try" not in content or "catch" not in content:
-                    warnings.append(f"! Missing error handling in API route: {file.relative_to(self.project_path)}")
-                if "process.env" in content and ".env" not in str(self.project_path.glob("*.env*")):
-                    warnings.append(f"! Using environment variables but no .env file found for {file.relative_to(self.project_path)}")
-                    
-        return errors, warnings 
+        if router_type == NextJsVersion.APP:
+            return common_files + [
+                {
+                    "path": "app/layout.tsx",
+                    "type": "layout",
+                    "description": "Root layout component"
+                },
+                {
+                    "path": "app/page.tsx",
+                    "type": "page",
+                    "description": "Home page component"
+                }
+            ]
+        else:
+            return common_files + [
+                {
+                    "path": "pages/_app.tsx",
+                    "type": "layout",
+                    "description": "Custom App component"
+                },
+                {
+                    "path": "pages/index.tsx",
+                    "type": "page",
+                    "description": "Home page component"
+                }
+            ] 

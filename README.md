@@ -1,59 +1,76 @@
-# StackShift
+# Stackshift
 
-A CLI tool to help migrate web applications from Vite to Next.js, powered by AI.
+An AI powered CLI tool to help migrate web applications from Vite to Next.js.
 
 ## Features
 
-- 🔍 Comprehensive project analysis
-- 🤖 AI-powered migration suggestions
-- 📦 Dependency compatibility checking
-- 🛣️ Routing structure analysis
-- ⚙️ Configuration migration assistance
+- Intelligent analysis of Vite projects
+- Automatic migration of components and routing
+- Support for both Next.js App Router and Pages Router
+- AI-powered code transformations
+- Interactive assistance
 
 ## Installation
-
-### Using pip
 
 ```bash
 pip install stackshift
 ```
 
-### From source
-
-```bash
-git clone https://github.com/yourusername/stackshift.git
-cd stackshift
-poetry install
-```
-
 ## Usage
 
-### Analyze a Vite project
-
+1. Configure your API key:
 ```bash
-stackshift analyze /path/to/your/vite/project
+stackshift setup
 ```
 
-Options:
-- `--skip-ai`: Skip AI-assisted analysis
-- `--non-interactive`: Run in non-interactive mode
-- `--version`: Show version information
+2. Scan your Vite project:
+```bash
+stackshift scan
+```
 
-### Environment Variables
+3. Validate migration progress:
+```bash
+stackshift validate
+```
 
-- `ANTHROPIC_API_KEY`: Your Anthropic API key for AI-assisted analysis
+4. Transform components:
+```bash
+stackshift transform
+```
 
-## Development
+5. Get interactive assistance:
+```bash
+stackshift chat
+```
 
-1. Clone the repository
-2. Install poetry if you haven't already: `pip install poetry`
-3. Install dependencies: `poetry install`
-4. Run tests: `poetry run pytest`
+## Options
 
-## Contributing
+- `--router`: Choose between "app" (default) and "pages" router
+- `--fix`: Automatically fix validation issues
+- Project path is optional if you're inside a Vite project
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+## Examples
+
+```bash
+# Scan current directory
+stackshift scan
+
+# Validate with Pages Router
+stackshift validate --router pages
+
+# Transform with automatic fixes
+stackshift validate --fix
+
+# Scan specific project
+stackshift scan ./my-vite-project
+```
+
+## Requirements
+
+- Python 3.8 or higher
+- Anthropic API key
+- Node.js and npm (for the Vite project)
 
 ## License
 
-MIT 
+MIT License 
